@@ -105,6 +105,23 @@ impl std::convert::From<u8> for FlagsRegister
     }
 }
 
+// fn write_byte(&self, addr: u16, byte: u8) {} }
+
+enum LoadByteTarget
+{
+    A, B, C, D, E, H, L, HLI
+}
+
+enum LoadByteSource
+{
+    A, B, C, D, E, H, L, D8, HLI
+}
+
+enum LoadType
+{
+    Byte(LoadByteTarget, LoadByteSource),
+}
+
 enum JumpTest
 {
     NotZero,
@@ -130,6 +147,7 @@ enum Instruction
     ADD(ArithmeticTarget),
     JP(JumpTest),
     INC(IncDecTarget),
+    LD(LoadType),
     RLC(PrefixTarget),
 }
 
@@ -234,6 +252,7 @@ impl CPU
                     _=> { /* TODO: support more targets */ self.pc }
                 }
            },
+
            Instruction::JP(test) =>
            {
                let jump_condition = match test
@@ -245,6 +264,34 @@ impl CPU
                    JumpTest::Always => true
                };
                self.jump(jump_condition)
+           },
+
+           Instruction::LD(load_type) =>
+           {
+               match load_type
+               {
+                   LoadType::Byte(target, source) =>
+                   {
+                       let source_value = match source
+                       {
+                           LoadByteSource::A => self.registers.a,
+                           LoadByteSource::D8 => self.read_next_byte(),
+                           LoadByteSource::HLI => self.bus.read_byte(self.registers.get_hl()),
+                           _ => { panic!("TODO: implement other sources") }
+                       };
+                       match target
+                       {
+                           LoadByteTarget::A => self.registers.a = source_value,
+                           LoadByteTarget::HLI => self.bus.write_byte(self.registers.get_hl(), source_value),
+                           _ => { panic!("TODO: implement other targets") }
+                       };
+                       match source
+                       {
+                           LoadByteSource::D8 => self.pc.wrapping_add(2),
+                                              => self.pc.wrapping_add(3),
+                       }
+                   }
+               }
            }
             _=> { /* TODO: support more targets */ self.pc }
         }
