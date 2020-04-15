@@ -103,25 +103,120 @@ impl std::convert::From<u8> for FlagsRegister
             carry,
         }
     }
+}
 
+enum JumpTest
+{
+    NotZero,
+    Zero,
+    NotCarry,
+    Carry,
+    Always,
+}
+
+enum PrefixTarget
+{
+    B,
+}
+
+enum IncDecTarget
+{
+    BC,
+    DE,
 }
 
 enum Instruction
 {
     ADD(ArithmeticTarget),
+    JP(JumpTest),
+    INC(IncDecTarget),
+    RLC(PrefixTarget),
 }
- enum ArithmeticTarget
+
+impl Instruction
+{
+    fn from_byte(byte: u8, prefixed: bool) -> Option<Instruction>
+    {
+        if prefixed
+        {
+            Instruction::from_byte_prefixed(byte)
+        }
+        else
+        {
+            Instruction::from_byte_not_prefixed(byte)
+        }
+    }
+
+    fn from_byte_prefixed(byte: u8) -> Option<Instruction>
+    {
+        match byte
+        {
+            0x00 => Some(Instruction::RLC(PrefixTarget::B)),
+                _=> /* TODO: Add mapping for rest of instructions*/ None
+        }
+    }
+
+    fn from_byte_not_prefixed(byte: u8) -> Option<Instruction>
+    {
+        match byte
+        {
+            0x02 => Some(Instruction::INC(IncDecTarget::BC)),
+            0x13 => Some(Instruction::INC(IncDecTarget::DE)),
+            _=> /* TODO: add mapping for rest of instructions */ None
+        }
+    }
+}
+
+enum ArithmeticTarget
 {
     A, B, C, D, E, H, L,
 }
 
-struct CPU {
+struct CPU
+{
     registers: Registers,
+    pc: u16,
+    bus: MemoryBus,
+}
+
+struct MemoryBus
+{
+    memory: [u8; 0xFFFF]
+}
+
+impl MemoryBus
+{
+    fn read_byte(&self, address: u16) -> u8
+    {
+        self.memory[address as usize]
+    }
 }
 
 impl CPU
 {
-    fn execute(&mut self, instruction: Instruction)
+    fn step(&mut self)
+    {
+        let mut instruction_byte = self.bus.read_byte(self.pc);
+        let prefixed = instruction_byte == 0xCB;
+        if prefixed
+        {
+            instruction_byte = self.bus.read_byte(self.pc + 1);
+        }
+
+        let next_pc = if let Some(instruction) = Instruction::from_byte(instruction_byte, prefixed)
+        {
+            self.execute(instruction)
+        }
+        else
+        {
+            let description = format!("0x{}{:x}", if prefixed { "cb" } else { "" }, instruction_byte);
+            panic!("Unknown instruction found for: {}", description)
+        };
+
+        self.pc = next_pc;
+    }
+
+    fn execute(&mut self, instruction: Instruction) -> u16
     {
         match instruction
         {
@@ -134,11 +229,24 @@ impl CPU
                         let value = self.registers.c;
                         let new_value = self.add(value);
                         self.registers.a = new_value;
+                        self.pc.wrapping_add(1)
                     }
-                    _=> { /* TODO: support more targets */ }
+                    _=> { /* TODO: support more targets */ self.pc }
                 }
-            }
-            _=> { /* TODO: support more targets */ }
+           },
+           Instruction::JP(test) =>
+           {
+               let jump_condition = match test
+               {
+                   JumpTest::NotZero => !self.registers.f.zero,
+                   JumpTest::NotCarry => !self.registers.f.carry,
+                   JumpTest::Zero => self.registers.f.zero,
+                   JumpTest::Carry => self.registers.f.carry,
+                   JumpTest::Always => true
+               };
+               self.jump(jump_condition)
+           }
+            _=> { /* TODO: support more targets */ self.pc }
         }
     }
 
@@ -155,6 +263,25 @@ impl CPU
         // then the addition caused a carry from the lower nibble to the upper nibble.
         self.registers.f.half_carry = (self.registers.a &0xF) + (value & 0xF) > 0xF;
         new_value
+    }
+
+    fn jump(&self, should_jump: bool) -> u16
+    {
+        if should_jump
+        {
+            // Gameboy is little endian so read pc + 2 as most significant bit
+            // and pc + 1 as least significant bit
+            let least_significant_byte = self.bus.read_byte(self.pc + 1) as u16;
+            let most_significant_byte = self.bus.read_byte(self.pc + 2) as u16;
+            (most_significant_byte << 8) | least_significant_byte
+        }
+        else
+        {
+            // If we don't jump we need to still move the program
+            // counter forward by 3 since the jump instruction is
+            // 3 bytes wide (1 byte for tag and 2 bytes for jump address)
+            self.pc.wrapping_add(3)
+        }
     }
 }
 
