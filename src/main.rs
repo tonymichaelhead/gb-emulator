@@ -194,7 +194,9 @@ struct CPU
 {
     registers: Registers,
     pc: u16,
+    sp: u16,
     bus: MemoryBus,
+    is_halted: bool,
 }
 
 struct MemoryBus
@@ -236,6 +238,10 @@ impl CPU
 
     fn execute(&mut self, instruction: Instruction) -> u16
     {
+        if is_halted {
+            return
+        }
+
         match instruction
         {
             Instruction::ADD(target) =>
@@ -288,12 +294,34 @@ impl CPU
                        match source
                        {
                            LoadByteSource::D8 => self.pc.wrapping_add(2),
-                                              => self.pc.wrapping_add(3),
+                                              => self.pc.wrapping_add(1),
                        }
                    }
+                   _ => { panic!("TODO: implement other load types") }
                }
+           },
+
+           Instruction::PUSH(target) =>
+           {
+               let value = match target
+               {
+                   StackTarget::BC => self.registers.get_bc(),
+                   _ => { panic!("TODO: support more targets") }
+               };
+               self.push(value);
+               self.pc.wrapping_add(1)
+           },
+
+           Instruction::CALL(test) =>
+           {
+               let jump_condition = match test
+               {
+                   JumpTest::NotZero => !self.registers.f.zero,
+                   _ => { panic!("TODO: support mor conditions") }
+               };
+               self.return_(jump_condition)
            }
-            _=> { /* TODO: support more targets */ self.pc }
+            _=> { panic!("TODO: support more instructions") }
         }
     }
 
@@ -328,6 +356,52 @@ impl CPU
             // counter forward by 3 since the jump instruction is
             // 3 bytes wide (1 byte for tag and 2 bytes for jump address)
             self.pc.wrapping_add(3)
+        }
+    }
+
+    fn push(&mut self, value: u16)
+    {
+        self.sp = self.sp.wrapping_sub(1);
+        self.bus.write_byte(self.sp, ((value & 0xFF00) >> 8) as u8);
+
+        self.sp = self.sp.wrapping_sub(1);
+        self.bus.write_byte(self.sp, (value & 0xFF) as u8);
+    }
+
+    fn pop(&mut self) -> u16
+    {
+        let lsb = self.bus.read_byte(self.sp) as u16;
+        self.sp = self.sp.wrapping_add(1);
+
+        let msb = self.bus.read_byte(self.sp) as u16;
+        self.sp = self.sp.wrapping_add(1);
+
+        (msb << 8 | lsb)
+    }
+
+    fn call(&mut self, should_jump: bool) -> u16
+    {
+        let next_pc = self.pc.wrapping_add(3);
+        if should_jump
+        {
+            self.push(next_pc);
+            self.read_next_word();
+        }
+        else
+        {
+            next_pc
+        }
+    }
+
+    fn return_(&mut self, should_jump: bool) -> u16
+    {
+        if should_jump
+        {
+            self.pop()
+        }
+        else
+        {
+            self.pc.wrapping_add(1)
         }
     }
 }
