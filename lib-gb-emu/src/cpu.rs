@@ -7,20 +7,34 @@ const VRAM_BEGIN: usize = 0x8000;
 const VRAM_END: usize = 0x9FFF;
 const VRAM_SIZE: usize = VRAM_END - VRAM_BEGIN + 1;
 
-struct Registers
+pub struct Registers
 {
-    a: u8,
-    b: u8,
-    c: u8,
-    d: u8,
-    e: u8,
-    f: FlagsRegister,
-    h: u8,
-    l: u8,
+    pub a: u8,
+    pub b: u8,
+    pub c: u8,
+    pub d: u8,
+    pub e: u8,
+    pub f: FlagsRegister,
+    pub h: u8,
+    pub l: u8,
 }
 
 impl Registers
 {
+    pub fn new() -> Registers
+    {
+        Registers {
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: FlagsRegister::new(),
+            h: 0,
+            l: 0,
+        }
+    }
+
     fn get_bc(&self) -> u16
     {
         (self.b as u16) << 8
@@ -70,13 +84,30 @@ impl Registers
     }
 }
 
-#[derive(Copy, Clone)]
-struct FlagsRegister
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FlagsRegister
 {
-    zero: bool,
-    subtract: bool,
-    half_carry: bool,
-    carry: bool,
+    // set if the last operation produced a result of 0
+    pub zero: bool,
+    // set if the last operation was a subtraction
+    pub subtract: bool,
+    // set if lower half of the result overflowed
+    pub half_carry: bool,
+    // set if the result overflowed
+    pub carry: bool,
+}
+
+impl FlagsRegister
+{
+    pub fn new() -> FlagsRegister
+    {
+        FlagsRegister {
+            zero: false,
+            subtract: false,
+            half_carry: false,
+            carry: false,
+        }
+    }
 }
 
 impl std::convert::From<FlagsRegister> for u8
@@ -144,7 +175,14 @@ enum JumpTest
 
 enum PrefixTarget
 {
+    A,
     B,
+    C,
+    D,
+    E,
+    H,
+    L,
+    HLI,
 }
 
 enum IncDecTarget
@@ -160,6 +198,9 @@ enum Instruction
     INC(IncDecTarget),
     LD(LoadType),
     RLC(PrefixTarget),
+
+    // Prefix Instructions
+    SWAP(PrefixTarget),
 
     // Stack Instructions
     PUSH(StackTarget),
@@ -187,6 +228,8 @@ impl Instruction
         match byte
         {
             0x00 => Some(Instruction::RLC(PrefixTarget::B)),
+
+            0x31 => Some(Instruction::SWAP(PrefixTarget::C)),
                 _=> /* TODO: Add mapping for rest of instructions*/ None
         }
     }
@@ -197,6 +240,8 @@ impl Instruction
         {
             0x02 => Some(Instruction::INC(IncDecTarget::BC)),
             0x13 => Some(Instruction::INC(IncDecTarget::DE)),
+
+
             _=> /* TODO: add mapping for rest of instructions */ None
         }
     }
@@ -208,7 +253,7 @@ enum ArithmeticTarget
 }
 
 #[derive(Copy,Clone)]
-enum TilePixelValue
+pub enum TilePixelValue
 {
     Zero,
     One,
@@ -222,14 +267,25 @@ fn empty_tile() -> Tile
     [[TilePixelValue::Zero; 8]; 8]
 }
 
-struct GPU
+const SCREEN_WIDTH: usize = 160;
+const SCREEN_HEIGHT: usize = 144;
+pub struct GPU
 {
-    vram: [u8; VRAM_SIZE],
-    tile_set: [Tile; 384],
+    pub canvas_buffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT * 4],
+    pub vram: [u8; VRAM_SIZE],
+    pub tile_set: [Tile; 384],
 }
 
 impl GPU
 {
+    pub fn new() -> GPU
+    {
+        GPU {
+            canvas_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 4],
+            vram: [0; VRAM_SIZE],
+            tile_set: [empty_tile(); 384],
+        }
+    }
     // TODO: probz delete
     // fn read_vram(&self, address: usize) -> u8
     // {
@@ -299,46 +355,132 @@ impl GPU
     }
 }
 
-struct CPU
-{
-    registers: Registers,
-    pc: u16,
-    sp: u16,
-    bus: MemoryBus,
-    is_halted: bool,
-}
+// MEMORY BUS
+// use crate::{
+    // timer::{Frequency, Timer},
+// };
 
-struct MemoryBus
+pub const BOOT_ROM_BEGIN: usize = 0x00;
+pub const BOOT_ROM_END: usize = 0xFF;
+pub const BOOT_ROM_SIZE: usize = BOOT_ROM_END - BOOT_ROM_BEGIN + 1;
+
+pub const ROM_BANK_0_BEGIN: usize = 0x0000;
+pub const ROM_BANK_0_END: usize = 0x3FFF;
+pub const ROM_BANK_0_SIZE: usize = ROM_BANK_0_END - ROM_BANK_0_BEGIN + 1;
+
+pub const ROM_BANK_N_BEGIN: usize = 0x0000;
+pub const ROM_BANK_N_END: usize = 0x3FFF;
+pub const ROM_BANK_N_SIZE: usize = ROM_BANK_N_END - ROM_BANK_N_BEGIN + 1;
+
+pub struct MemoryBus
 {
+    boot_rom: Option<[u8; BOOT_ROM_SIZE]>,
     memory: [u8; 0xFFFF],
-    gpu: GPU,
+    rom_bank_0: [u8; ROM_BANK_0_SIZE],
+    pub gpu: GPU,
 }
 
 impl MemoryBus
 {
-    fn read_byte(&self, address: u16) -> u8
+    pub fn new(boot_rom_buffer: Option<Vec<u8>>, game_rom: Vec<u8>) -> MemoryBus
+    {
+        let boot_rom = boot_rom_buffer.map(|boot_rom_buffer| {
+            if boot_rom_buffer.len() != BOOT_ROM_SIZE
+            {
+                panic!(
+                    "Supplied boot ROM is the wrong size. Is {} bytes but should be {} bytes",
+                    boot_rom_buffer.len(),
+                    BOOT_ROM_SIZE
+                );
+            }
+            let mut boot_rom = [0; BOOT_ROM_SIZE];
+            boot_rom.copy_from_slice(&boot_rom_buffer);
+            boot_rom
+        });
+
+        let mut rom_bank_0 = [0; ROM_BANK_0_SIZE];
+        for i in 0..ROM_BANK_0_SIZE
+        {
+            rom_bank_0[i] = game_rom[i];
+        }
+        let mut rom_bank_n = [0; ROM_BANK_N_SIZE];
+        for i in 0..ROM_BANK_N_SIZE
+        {
+            rom_bank_n[i] = game_rom[ROM_BANK_0_SIZE + i];
+        }
+        //TODO implement
+        // let mut divider = Timer::new(Frequency::F16384);
+        // divider.on = true;
+
+        MemoryBus {
+            // Note: instead of modeling memory as one array of length 0xFFFF, we'll
+            // break memory up into it's logical parts
+            // TODO: fix
+            boot_rom,
+            rom_bank_0,
+            memory: [1; 65535],
+            gpu: GPU::new(),
+        }
+    }
+
+    pub fn read_byte(&self, address: u16) -> u8
     {
         let address = address as usize;
         match address {
+            BOOT_ROM_BEGIN ..= BOOT_ROM_END => {
+                if let Some(boot_rom) = self.boot_rom
+                {
+                    boot_rom[address]
+                }
+                else
+                {
+                    self.rom_bank_0[address]
+                }
+            }
             VRAM_BEGIN ..= VRAM_END => self.gpu.vram[address - VRAM_BEGIN],
             _ => panic!("TODO: support other areas of memory")
         }
     }
 
-    fn write_byte(&mut self, address: u16, value: u8) {
+    pub fn write_byte(&mut self, address: u16, value: u8) {
         let address = address as usize;
         match address {
+            ROM_BANK_0_BEGIN ..= ROM_BANK_0_END => {
+                self.rom_bank_0[address] = value;
+            }
             VRAM_BEGIN ..= VRAM_END => {
-                self.gpu.write_vram(address - VRAM_BEGIN, value)
+                self.gpu.write_vram(address - VRAM_BEGIN, value);
             }
             _ => panic!("TODO: support other areas of memory")
         }
     }
 }
 
+pub struct CPU
+{
+    pub registers: Registers,
+    pc: u16,
+    sp: u16,
+    pub bus: MemoryBus,
+    is_halted: bool,
+    interrupts_enabled: bool,
+}
+
 impl CPU
 {
-    fn step(&mut self)
+    pub fn new(boot_rom: Option<Vec<u8>>, game_rom: Vec<u8>) -> CPU
+    {
+        CPU {
+            registers: Registers::new(),
+            pc: 0x0,
+            sp: 0x00,
+            bus: MemoryBus::new(boot_rom, game_rom),
+            is_halted: false,
+            interrupts_enabled: true,
+        }
+    }
+
+    pub fn step(&mut self) -> u8
     {
         let mut instruction_byte = self.bus.read_byte(self.pc);
         let prefixed = instruction_byte == 0xCB;
@@ -357,7 +499,9 @@ impl CPU
             panic!("Unknown instruction found for: {}", description)
         };
 
-        self.pc = next_pc;
+        // TODO restore
+        // self.pc = next_pc;
+        1
     }
 
     fn execute(&mut self, instruction: Instruction) -> u16
@@ -382,6 +526,19 @@ impl CPU
                     }
                     _=> { /* TODO: support more targets */ self.pc }
                 }
+           },
+
+           Instruction::SWAP(register) =>
+           {
+               println!("swap");
+                // DESCRIPTION: switch upper and lower nibble of a specific register
+                // PC:+2
+                // WHEN: target is (HL):
+                // Cycles: 16
+                // ELSE:
+                // Cycles: 8
+                // Z:? S:0 H:0 C:0
+                // prefix_instruction!(register, self.swap_nibbles => reg)
            },
 
            Instruction::JP(test) =>
