@@ -383,9 +383,10 @@ impl GPU
 }
 
 // MEMORY BUS
-// use crate::{
+use crate::{
     // timer::{Frequency, Timer},
-// };
+    interrupt_flags::InterruptFlags,
+};
 
 pub const BOOT_ROM_BEGIN: usize = 0x00;
 pub const BOOT_ROM_END: usize = 0xFF;
@@ -399,12 +400,18 @@ pub const ROM_BANK_N_BEGIN: usize = 0x0000;
 pub const ROM_BANK_N_END: usize = 0x3FFF;
 pub const ROM_BANK_N_SIZE: usize = ROM_BANK_N_END - ROM_BANK_N_BEGIN + 1;
 
+pub const VBLANK_VECTOR: u16 = 0x40;
+pub const LCDSTAT_VECTOR: u16 = 0x48;
+pub const TIMER_VECTOR: u16 = 0x50;
+
 pub struct MemoryBus
 {
     boot_rom: Option<[u8; BOOT_ROM_SIZE]>,
     memory: [u8; 0xFFFF],
     rom_bank_0: [u8; ROM_BANK_0_SIZE],
     pub gpu: GPU,
+    pub interrupt_enable: InterruptFlags,
+    pub interrupt_flag: InterruptFlags,
 }
 
 impl MemoryBus
@@ -447,6 +454,8 @@ impl MemoryBus
             rom_bank_0,
             memory: [1; 65535],
             gpu: GPU::new(),
+            interrupt_enable: InterruptFlags::new(),
+            interrupt_flag: InterruptFlags::new(),
         }
     }
 
@@ -668,24 +677,69 @@ impl CPU
     pub fn step(&mut self) -> u8
     {
         let mut instruction_byte = self.bus.read_byte(self.pc);
+
         let prefixed = instruction_byte == 0xCB;
         if prefixed
         {
-            instruction_byte = self.bus.read_byte(self.pc + 1);
+            instruction_byte = self.read_next_byte();
         }
 
-        let next_pc = if let Some(instruction) = Instruction::from_byte(instruction_byte, prefixed)
-        {
-            self.execute(instruction)
-        }
-        else
-        {
-            let description = format!("0x{}{:x}", if prefixed { "cb" } else { "" }, instruction_byte);
-            panic!("Unknown instruction found for: {}", description)
-        };
+        let (next_pc, mut cycles) =
+            if let Some(instruction) = Instruction::from_byte(instruction_byte, prefixed)
+            {
+                self.execute(instruction)
+            }
+            else
+            {
+                let description = format!(
+                    "0x{}{:x}",
+                    if prefixed { "cb" } else { "" },
+                    instruction_byte
+                );
+                panic!(
+                    "0x{:x}: Unknown instructin found - {}",
+                    self.pc, description
+                )
+            };
 
-        // TODO restore
-        self.pc = next_pc;
+        self.bus.step(cycles);
+
+        if self.bus.has_interrupt()
+        {
+            self.is_halted = false;
+        }
+        if !self.is_halted
+        {
+            self.pc = next_pc;
+        }
+
+        let mut interrupted = false;
+        if self.interrupts_enabled
+        {
+            if self.bus.interrupt_enable.vblank && self.bus.interrupt_flag.vblank
+            {
+                interrupted = true;
+                self.bus.interrupt_flag.vblank = false;
+                self.interrupt(VBLANK_VECTOR)
+            }
+            if self.bus.interrupt_enable.lcdstat && self.bus.interrupt_flag.lcdstat
+            {
+                interrupted = true;
+                self.bus.interrupt_flag.lcdstat = false;
+                self.interrupt(LCDSTAT_VECTOR)
+            }
+            if self.bus.interrupt_enable.timer && self.bus.interrupt_flag.timer
+            {
+                interrupted = true;
+                self.bus.interrupt_flag.timer = false;
+                self.interrupt(TIMER_VECTOR)
+            }
+        }
+        if interrupted
+        {
+            cycles += 12;
+        }
+        cycles
     }
 
     fn execute(&mut self, instruction: Instruction) -> (u16, u8)
