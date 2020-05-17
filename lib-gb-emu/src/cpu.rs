@@ -149,21 +149,35 @@ enum StackTarget
     HL,
 }
 
-enum LoadByteTarget
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LoadByteTarget
 {
     A, B, C, D, E, H, L, HLI
 }
 
-enum LoadByteSource
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LoadByteSource
 {
     A, B, C, D, E, H, L, D8, HLI
 }
 
-enum LoadType
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LoadWordTarget
 {
-    Byte(LoadByteTarget, LoadByteSource),
+    BC,
+    DE,
+    HL,
+    SP,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LoadType
+{
+    Byte(LoadByteTarget, LoadByteSource),
+    Word(LoadWordTarget),
+}
+
+#[derive(Debug)]
 enum JumpTest
 {
     NotZero,
@@ -173,6 +187,7 @@ enum JumpTest
     Always,
 }
 
+#[derive(Debug)]
 enum PrefixTarget
 {
     A,
@@ -185,12 +200,14 @@ enum PrefixTarget
     HLI,
 }
 
+#[derive(Debug)]
 enum IncDecTarget
 {
     BC,
     DE,
 }
 
+#[derive(Debug)]
 enum Instruction
 {
     ADD(ArithmeticTarget),
@@ -241,15 +258,25 @@ impl Instruction
             0x02 => Some(Instruction::INC(IncDecTarget::BC)),
             0x13 => Some(Instruction::INC(IncDecTarget::DE)),
 
+            0x31 => Some(Instruction::LD(LoadType::Word(LoadWordTarget::SP))),
 
             _=> /* TODO: add mapping for rest of instructions */ None
         }
     }
 }
 
-enum ArithmeticTarget
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ArithmeticTarget
 {
-    A, B, C, D, E, H, L,
+    A,
+    B,
+    C,
+    D,
+    E,
+    H,
+    L,
+    D8,
+    HLI,
 }
 
 #[derive(Copy,Clone)]
@@ -456,6 +483,164 @@ impl MemoryBus
     }
 }
 
+macro_rules! manipulate_8bit_register
+{
+    // Macro pattern for getting a value from a register and doing some work on that value
+    //
+    //  # Example usage:
+    //  ``` rust
+    //  manipulate_8bit_register!(self, a => print_register)
+    //  ```
+    //
+    //  The above reads register `a` and then calls the method `print_register` with the
+    //  value from `a`
+    ( $self:ident : $getter:ident => $work:ident) => {
+        {
+            let value = $self.registers.$getter;
+            $self.$work(value)
+        }
+    };
+
+    // Macro pattern for getting a value from a register and doing some work on that value
+    // and writing it back to the register
+    //
+    //  # Example usage:
+    //  ``` rust
+    //  manipulate_8bit_register!(self, a => increment => d)
+    //  ```
+    //
+    //  The above reads register `a` and then calls the method `increment` with the
+    //  value from `a` and then writes the result of `increment` into register `d`
+    ( $self:ident : $getter:ident => $work:ident => $setter:ident) => {
+        {
+            let result = manipulate_8bit_register!($self: $getter => $work);
+            $self.registers.$setter = result;
+        }
+    };
+}
+
+macro_rules! arithmetic_instruction
+{
+    // Macro pattern for matching a register and then manipulating the register
+    //
+    // # Example Usage:
+    // ``` rust
+    // arithmetic_instruction!(register, self.foo)
+    // ```
+    //
+    // The above matches a register and then calls the function `foo` to do work on the
+    // value in that register.
+    ( $register:ident, $self:ident.$work:ident) => {
+        {
+            match $register
+            {
+                ArithmeticTarget::A => manipulate_8bit_register!($self: a => $work),
+                ArithmeticTarget::B => manipulate_8bit_register!($self: b => $work),
+                ArithmeticTarget::C => manipulate_8bit_register!($self: c => $work),
+                ArithmeticTarget::D => manipulate_8bit_register!($self: d => $work),
+                ArithmeticTarget::E => manipulate_8bit_register!($self: e => $work),
+                ArithmeticTarget::H => manipulate_8bit_register!($self: h => $work),
+                ArithmeticTarget::L => manipulate_8bit_register!($self: l => $work),
+                ArithmeticTarget::D8 => {
+                    let value = $self.read_next_byte();
+                    $self.$work(value);
+                }
+                ArithmeticTarget::HLI => {
+                    let value = $self.bus.read_byte($self.registers.get_hl());
+                    $self.$work(value;)
+                }
+            };
+            match $register
+            {
+                ArithmeticTarget::D8  => ($self.pc.wrapping_add(2), 8),
+                ArithmeticTarget::HLI => ($self.pc.wrapping_add(1), 8),
+                _                     => ($self.pc.wrapping_add(1), 4)
+            }
+        }
+    };
+
+    // Macro pattern for matching a register and then manipulating the register and
+    // writing the value back to the register
+    //
+    // # Example Usage:
+    // ``` rust
+    // arithmetic_instruction!(register, self.foo => a)
+    // ```
+    //
+    // The above matches a register and then calls the function `foo` to do work on the
+    // value in that register and wirtes the result of `foo` into the a register.
+    ( $register:ident, $self:ident.$work:ident => a) => {
+        {
+            match $register
+            {
+                ArithmeticTarget::A => manipulate_8bit_register!($self: a => $work => a),
+                ArithmeticTarget::B => manipulate_8bit_register!($self: b => $work => a),
+                ArithmeticTarget::C => manipulate_8bit_register!($self: c => $work => a),
+                ArithmeticTarget::D => manipulate_8bit_register!($self: d => $work => a),
+                ArithmeticTarget::E => manipulate_8bit_register!($self: e => $work => a),
+                ArithmeticTarget::H => manipulate_8bit_register!($self: h => $work => a),
+                ArithmeticTarget::L => manipulate_8bit_register!($self: l => $work => a),
+                ArithmeticTarget::D8 => {
+                    let value = $self.read_next_byte();
+                    let result = $self.$work(value);
+                    $self.registers.a = result;
+                }
+                ArithmeticTarget::HLI => {
+                    let value = $self.bus.read_byte($self.registers.get_hl());
+                    let result = $self.$work(value);
+                    $self.registers.a = result;
+                }
+            };
+            match $register
+            {
+                ArithmeticTarget::D8  => ($self.pc.wrapping_add(2), 8),
+                ArithmeticTarget::HLI => ($self.pc.wrapping_add(1), 8),
+                _                     => ($self.pc.wrapping_add(1), 4)
+            }
+        }
+    };
+}
+
+macro_rules! prefix_instruction
+{
+    // Macro pattern for matching a register and then manipulating the register and writing the
+    // value back to the register
+    //
+    //  # Example usage:
+    //  ''' rust
+    //  prefix_instruction!(register, self.foo => a)
+    //  '''
+    //
+    //  The above mathes a register and then calls the function `foo` to do work the value
+    //  in that register and writes the result of `foo` into the `a` register.
+    ( $register:ident, $self:ident.$work:ident => reg) => {
+        {
+            match $register
+            {
+                PrefixTarget::A => manipulate_8bit_register!($self: a => $work => a),
+                PrefixTarget::B => manipulate_8bit_register!($self: b => $work => b),
+                PrefixTarget::C => manipulate_8bit_register!($self: c => $work => c),
+                PrefixTarget::D => manipulate_8bit_register!($self: d => $work => d),
+                PrefixTarget::E => manipulate_8bit_register!($self: e => $work => e),
+                PrefixTarget::H => manipulate_8bit_register!($self: h => $work => h),
+                PrefixTarget::L => manipulate_8bit_register!($self: l => $work => l),
+                PrefixTarget::HLI => {
+                    let hl = $self.registers.get_hl();
+                    let value = $self.bus.read_byte(hl);
+                    let result = $self.$work(value);
+                    $self.bus.write_byte(hl, result);
+                }
+            }
+            let cycles = match $register
+            {
+                PrefixTarget::HLI => 16,
+                _                 => 8
+            };
+            ($self.pc.wrapping_add(2), cycles)
+        }
+    };
+}
+
 pub struct CPU
 {
     pub registers: Registers,
@@ -500,32 +685,37 @@ impl CPU
         };
 
         // TODO restore
-        // self.pc = next_pc;
-        1
+        self.pc = next_pc;
     }
 
-    fn execute(&mut self, instruction: Instruction) -> u16
+    fn execute(&mut self, instruction: Instruction) -> (u16, u8)
     {
+        // OPCodes Map: http://pastraiser.com/cpu/gameboy/gameboy_opcodes.html
+        // OPCodes Explanation: https://web.archive.org/web/20181009131634/http://www.chrisantonellis.com/files/gameboy/gb-instructions.txt
+
         // if self.is_halted {
             // // TODO: fix...
            // self.pc.wrapping_add(1)
         // }
+        println!("instruction {:?}", instruction);
 
         match instruction
         {
-            Instruction::ADD(target) =>
+            Instruction::ADD(register) =>
             {
-                match target
-                {
-                    ArithmeticTarget::C =>
-                    {
-                        let value = self.registers.c;
-                        let new_value = self.add(value);
-                        self.registers.a = new_value;
-                        self.pc.wrapping_add(1)
-                    }
-                    _=> { /* TODO: support more targets */ self.pc }
-                }
+                // DESCRIPTION: (add) - add the value stored in a specific register
+                // with the value in the A register
+                // WHEN: target is D8
+                // PC:+2
+                // Cycles: 8
+                // WHEN: target is (HL)
+                // PC:+1
+                // Cycles: 8
+                // ELSE:
+                // PC: +1
+                // Cycles: 4
+                // Z:? S:0 H:? C:?
+                arithmetic_instruction!(register, self.add_without_carry => a)
            },
 
            Instruction::SWAP(register) =>
@@ -538,11 +728,15 @@ impl CPU
                 // ELSE:
                 // Cycles: 8
                 // Z:? S:0 H:0 C:0
-                // prefix_instruction!(register, self.swap_nibbles => reg)
+                prefix_instruction!(register, self.swap_nibbles => reg)
            },
 
            Instruction::JP(test) =>
            {
+               // DESCRIPTION: conditionally jump to the address stored in the next word in memory
+               // PC:?/+3
+               // Cycles: 16/12
+               // Z:- N:- H:- C:-
                let jump_condition = match test
                {
                    JumpTest::NotZero => !self.registers.f.zero,
@@ -575,68 +769,117 @@ impl CPU
                        };
                        match source
                        {
-                           LoadByteSource::D8 => self.pc.wrapping_add(2),
-                           _                  => self.pc.wrapping_add(1),
+                           LoadByteSource::D8 => (self.pc.wrapping_add(2), 8),
+                           _                  => (self.pc.wrapping_add(1), 8),
                        }
+                   }
+
+                   // DESCRIPTION: load next word in memory into a particular register
+                   // PC:+3
+                   // Cycles: 12
+                   // Z:- N:- H:- C:-
+                   LoadType::Word(target) =>
+                   {
+                       let word = self.read_next_word();
+                       match target
+                       {
+                           LoadWordTarget::BC => self.registers.set_bc(word),
+                           LoadWordTarget::DE => self.registers.set_de(word),
+                           LoadWordTarget::HL => self.registers.set_hl(word),
+                           LoadWordTarget::SP => self.sp = word,
+                       };
+                       (self.pc.wrapping_add(3), 12)
                    }
                }
            },
 
            Instruction::PUSH(target) =>
            {
+               // DESCRIPTION: push a value from a given register on to the stack
+               // PC:+1
+               // Cycles: 16
+               // Z:- N:- H:- C:-
                let value = match target
                {
                    StackTarget::BC => self.registers.get_bc(),
                    _ => { panic!("TODO: support more targets") }
                };
                self.push(value);
-               self.pc.wrapping_add(1)
+               (self.pc.wrapping_add(1), 16)
            },
 
            Instruction::CALL(test) =>
            {
+               // DESCRIPTION: Conditionally PUSH the would be instructino to the
+               // stack and then jump to a specific address
+               // PC:?/+3
+               // Cycles: 24/12
+               // Z:- N:- H:- C:-
+
                let jump_condition = match test
                {
                    JumpTest::NotZero => !self.registers.f.zero,
                    _ => { panic!("TODO: support mor conditions") }
                };
-               self.return_(jump_condition)
+               self.call(jump_condition)
            }
             _=> { panic!("TODO: support more instructions") }
         }
     }
 
-    fn add(&mut self, value: u8) -> u8
+    #[inline(always)]
+    fn add_without_carry(&mut self, value: u8) -> u8
     {
-        let (new_value, did_overflow) = self.registers.a.overflowing_add(value);
-
-        // set flags
-        self.registers.f.zero = new_value == 0;
-        self.registers.f.subtract = false;
-        self.registers.f.carry = did_overflow;
-        // Half Carry is set if adding the lower nibbles of the value and register A
-        // together result in a value bigger than 0xF. If the result is larger than 0xF
-        // then the addition caused a carry from the lower nibble to the upper nibble.
-        self.registers.f.half_carry = (self.registers.a &0xF) + (value & 0xF) > 0xF;
-        new_value
+        self.add(value, false)
     }
 
-    fn jump(&self, should_jump: bool) -> u16
+    #[inline(always)]
+    fn add(&mut self, value: u8, add_carry: bool) -> u8
     {
-        if should_jump
+        let additional_carry = if add_carry && self.registers.f.carry
         {
-            // Gameboy is little endian so read pc + 2 as most significant bit
-            // and pc + 1 as least significant bit
-            let least_significant_byte = self.bus.read_byte(self.pc + 1) as u16;
-            let most_significant_byte = self.bus.read_byte(self.pc + 2) as u16;
-            (most_significant_byte << 8) | least_significant_byte
+            1
         }
         else
         {
-            // If we don't jump we need to still move the program
-            // counter forward by 3 since the jump instruction is
-            // 3 bytes wide (1 byte for tag and 2 bytes for jump address)
-            self.pc.wrapping_add(3)
+            0
+        };
+        let (add, carry) = self.registers.a.overflowing_add(value);
+        let (add2, carry2) = add.overflowing_add(additional_carry);
+
+        // set flags
+        self.registers.f.zero = add2 == 0;
+        self.registers.f.subtract = false;
+        self.registers.f.carry = carry || carry2;
+        // Half Carry is set if adding the lower nibbles of the value and register A
+        // together result in a value bigger than 0xF. If the result is larger than 0xF
+        // then the addition caused a carry from the lower nibble to the upper nibble.
+        self.registers.f.half_carry =
+            ((self.registers.a & 0xF) + (value & 0xF) + additional_carry) > 0xF;
+        add2
+    }
+
+    #[inline(always)]
+    fn swap_nibbles(&mut self, value: u8) -> u8
+    {
+        let new_value = ((value & 0xf) << 4) | ((value & 0xf0) >> 4);
+        self.registers.f.zero = new_value == 0;
+        self.registers.f.subtract = false;
+        self.registers.f.half_carry = false;
+        self.registers.f.carry = false;
+        new_value
+    }
+
+    #[inline(always)]
+    fn jump(&self, should_jump: bool) -> (u16, u8)
+    {
+        if should_jump
+        {
+            (self.read_next_word(), 16)
+        }
+        else
+        {
+            (self.pc.wrapping_add(3), 12)
         }
     }
 
@@ -691,7 +934,7 @@ impl CPU
     {
         // Gameboy is little endian so read pc + 2 as most significant bit
         // and pc + 1 as least significant bit
-        ((self.bus.read_byte(self.pc + 2) as u16) << 8) | (self.bus.read_byte(self.pc + 1) as u16) 
+        ((self.bus.read_byte(self.pc + 2) as u16) << 8) | (self.bus.read_byte(self.pc + 1) as u16)
     }
 
     #[inline(always)]
